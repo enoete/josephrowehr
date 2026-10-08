@@ -1,0 +1,4 @@
+private/config.php
+private/storage/*
+!private/storage/.gitkeep
+.DS_Store

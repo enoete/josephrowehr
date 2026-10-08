@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>HR Timecards | Joseph Rowe Attorneys-at-Law</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Open+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="assets/app.css?v=1">
+</head>
+<body>
+
+<main id="login" class="login" hidden>
+  <div class="login-art" aria-hidden="true">
+    <p class="login-quote">Hours, attendance and timecards in one place.</p>
+    <p class="login-place">Charlestown, Nevis</p>
+  </div>
+  <form id="loginForm" class="login-form" autocomplete="on">
+    <img class="login-logo" src="https://www.josephrowelaw.com/wp-content/uploads/2024/12/header-logo-1.png" alt="Joseph Rowe Attorneys-at-Law" onerror="this.hidden=true">
+    <h1>HR Timecards</h1>
+    <p class="login-sub">Upload the time clock export and get reports ready to share.</p>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <p id="loginError" class="form-error" role="alert" hidden></p>
+    <button type="submit" id="loginBtn" class="btn">Sign in</button>
+    <p class="login-note">For the HR manager only. Attendance records here are confidential.</p>
+  </form>
+</main>
+
+<div id="app" class="app" hidden>
+  <header class="top no-print">
+    <div class="brand">
+      <img class="brand-logo" src="https://www.josephrowelaw.com/wp-content/uploads/2024/12/header-logo-1.png" alt="Joseph Rowe Attorneys-at-Law" onerror="this.hidden=true">
+      <span class="brand-name">HR Timecards</span>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" class="tab" data-tab="overview" aria-current="page">Overview</button>
+      <button type="button" class="tab" data-tab="timecards">Timecards</button>
+      <button type="button" class="tab" data-tab="attention">Needs attention <span class="count" id="attnCount" hidden></span></button>
+      <button type="button" class="tab" data-tab="punctuality">Punctuality</button>
+      <button type="button" class="tab" data-tab="uploads">Uploads</button>
+      <button type="button" class="tab" data-tab="settings">Settings</button>
+    </nav>
+    <div class="top-right">
+      <label class="sr-only" for="periodSel">Pay period</label>
+      <select id="periodSel" class="select"></select>
+      <button type="button" id="logoutBtn" class="quiet-btn">Sign out</button>
+    </div>
+  </header>
+
+  <main class="content" id="content">
+    <p id="flash" class="flash no-print" role="status" hidden></p>
+    <section id="tab-overview" class="pane"></section>
+    <section id="tab-timecards" class="pane" hidden></section>
+    <section id="tab-attention" class="pane" hidden></section>
+    <section id="tab-punctuality" class="pane" hidden></section>
+
+    <section id="tab-uploads" class="pane" hidden>
+      <div class="pane-head"><div><h1>Uploads</h1>
+        <p class="lede">Add the Timecard Report file exported from the time clock. Each pay period is kept here so you can come back to it.</p></div></div>
+      <label class="drop" id="drop" for="fileInput">
+        <input id="fileInput" type="file" accept=".csv,text/csv" class="sr-only">
+        <strong>Choose the CSV file, or drop it here</strong>
+        <span>The file the clock names like NGTecoTime_report-20260901-20260921.csv</span>
+      </label>
+      <div id="preview"></div>
+      <div class="card" id="periodList"></div>
+    </section>
+
+    <section id="tab-settings" class="pane" hidden>
+      <div class="pane-head"><div><h1>Settings</h1>
+        <p class="lede">These rules decide how hours, lateness and absences are worked out. They apply to every pay period.</p></div></div>
+      <form id="settingsForm" class="card form">
+        <fieldset><legend>Working day</legend>
+          <div class="fields">
+            <label for="setStart">Work starts<input id="setStart" type="time" required></label>
+            <label for="setEnd">Work ends<input id="setEnd" type="time" required></label>
+            <label for="setGrace">Grace period (minutes)<input id="setGrace" type="number" min="0" max="120" required></label>
+          </div>
+          <p class="hint">Someone is late when their first clock-in is after the start time plus the grace period, and leaves early when their last clock-out is before the end time minus it.</p>
+        </fieldset>
+        <fieldset><legend>Lunch</legend>
+          <div class="fields">
+            <label for="setLunch">Unpaid lunch to take off (minutes)<input id="setLunch" type="number" min="0" max="180" required></label>
+          </div>
+          <p class="hint">Applies only to days recorded as one unbroken stretch of six hours or more, where the person did not clock out for lunch. Leave at 0 to count the whole stretch.</p>
+        </fieldset>
+        <fieldset><legend>How the clock's file is read</legend>
+          <div class="fields">
+            <label for="setCutoff">The clock starts a new day at<input id="setCutoff" type="time"></label>
+          </div>
+          <p class="hint">The clock is set to change day in the afternoon instead of at midnight, which splits each working day across two report days. With the time entered here, the portal puts each day back together. Clear the box if the clock is later fixed to change day at midnight.</p>
+          <label class="check" for="setAssume"><input id="setAssume" type="checkbox"> When a day has two punches with the same label hours apart (for example both "IN"), count them as arrival and departure</label>
+        </fieldset>
+        <fieldset><legend>Days the office was closed</legend>
+          <label for="setHolidays" class="sr-only">Closed dates</label>
+          <textarea id="setHolidays" rows="3" placeholder="One date per line, for example 2026-12-25"></textarea>
+          <p class="hint">Nobody is marked absent on these dates. A weekday on which no one clocked in at all is already treated as closed.</p>
+        </fieldset>
+        <div class="row"><button type="submit" class="btn">Save settings</button><span id="settingsMsg" class="muted" role="status"></span></div>
+      </form>
+    </section>
+  </main>
+</div>
+
+<dialog id="dayDialog" class="dialog">
+  <form id="dayForm" method="dialog">
+    <h2 id="dayTitle"></h2>
+    <p id="daySub" class="muted"></p>
+    <div id="dayPunches" class="punches"></div>
+    <fieldset><legend>Add a missing punch</legend>
+      <div class="fields">
+        <label for="addType">Type<select id="addType" class="select"><option value="IN">Clock in</option><option value="OUT">Clock out</option></select></label>
+        <label for="addTime">Time<input id="addTime" type="time"></label>
+        <button type="button" id="addPunch" class="btn small">Add</button>
+      </div>
+      <div id="manualList" class="punches"></div>
+    </fieldset>
+    <label for="dayNote" class="stack-label">Note for the record<textarea id="dayNote" rows="2" maxlength="300" placeholder="For example: forgot to clock out, confirmed with supervisor"></textarea></label>
+    <p id="dayError" class="form-error" role="alert" hidden></p>
+    <div class="row end"><button type="button" id="dayCancel" class="quiet-btn">Cancel</button><button type="submit" id="daySave" class="btn">Save correction</button></div>
+  </form>
+</dialog>
+
+<div id="printArea" class="print-only"></div>
+
+<script src="assets/vendor/xlsx.mini.min.js"></script>
+<script src="assets/engine.js?v=1"></script>
+<script src="assets/app.js?v=1"></script>
+</body>
+</html>
