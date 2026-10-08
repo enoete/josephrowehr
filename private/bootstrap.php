@@ -94,12 +94,56 @@ function hr_storage_ready(): bool
     return is_dir(HR_STORAGE) && is_writable(HR_STORAGE);
 }
 
-function hr_period_file(string $id): string
+function hr_upload_file(string $id): string
 {
-    if (!preg_match('/^\d{8}-\d{8}$/', $id)) {
-        hr_json(['error' => 'Unknown pay period.'], 404);
+    if (!preg_match('/^u\d{14}[a-f0-9]{6}$/', $id)) {
+        hr_json(['error' => 'Unknown upload.'], 404);
     }
-    return HR_STORAGE . '/period-' . $id . '.json';
+    return HR_STORAGE . '/uploads/' . $id . '.json';
+}
+
+// Runs $fn while holding an exclusive lock, so two saves at the same moment cannot overwrite each other.
+function hr_locked(callable $fn)
+{
+    $h = fopen(HR_STORAGE . '/.lock', 'c');
+    flock($h, LOCK_EX);
+    try {
+        return $fn();
+    } finally {
+        flock($h, LOCK_UN);
+        fclose($h);
+    }
+}
+
+// Earlier versions kept one file per pay period. Move those into the single upload history, once.
+function hr_migrate(): void
+{
+    $old = glob(HR_STORAGE . '/period-*.json') ?: [];
+    if (!$old) {
+        return;
+    }
+    hr_locked(function () use ($old) {
+        @mkdir(HR_STORAGE . '/uploads', 0750, true);
+        $corrFile = HR_STORAGE . '/corrections.json';
+        $corr = hr_read($corrFile);
+        foreach ($old as $f) {
+            $p = hr_read($f);
+            if (!$p || empty($p['csv'])) {
+                continue;
+            }
+            $id = 'u' . gmdate('YmdHis', strtotime($p['uploadedAt'] ?? 'now') ?: time()) . bin2hex(random_bytes(3));
+            hr_write(HR_STORAGE . '/uploads/' . $id . '.json', [
+                'id' => $id, 'filename' => $p['filename'] ?? 'timecard.csv', 'uploadedAt' => $p['uploadedAt'] ?? gmdate('c'),
+                'start' => $p['start'], 'end' => $p['end'], 'employees' => $p['employees'] ?? 0,
+                'hash' => sha1(str_replace("\r\n", "\n", trim((string) $p['csv']))), 'csv' => $p['csv'],
+            ]);
+            foreach ((array) ($p['corrections'] ?? []) as $k => $v) {
+                $corr[$k] = $v;
+            }
+            rename($f, $f . '.migrated');
+        }
+        hr_write($corrFile, $corr);
+    });
 }
 
 function hr_read(string $file, array $fallback = []): array

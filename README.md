@@ -3,8 +3,21 @@
 Portal for the Joseph Rowe HR manager: upload the time clock's Timecard Report export (CSV) and get
 hours, timecards, missing-punch follow-ups and punctuality reports, with Excel, CSV and print/PDF exports.
 
-Plain PHP 8.1+. No database, no build step, nothing to install. Uploaded pay periods are saved as files
-in `private/storage/`, outside the web folder.
+Plain PHP 8.1+. No database, no build step, nothing to install. Uploads, corrections and settings are
+saved as files in `private/storage/`, outside the web folder.
+
+## Uploads build one record
+
+Every uploaded export joins a single record, and reports cover any date range. For each person and each
+report day, one copy is kept: the one from the file whose range runs furthest past that day (it was
+exported later, so it saw the whole day), then the one with more punches, then the most recent upload.
+So the same file twice, overlapping files, files in any order, and a file exported mid-day followed by a
+fuller one all give the same result as one complete export. `node tests/merge.js <export.csv>` checks
+this. An exact repeat of a file is recognised and not stored again. Corrections belong to the person and
+day, not to a file, so they survive any upload or removal.
+
+Older installs that saved one file per pay period are converted automatically the first time the portal
+loads; the old file is kept beside it with a `.migrated` ending.
 
 ## Layout
 
@@ -16,8 +29,9 @@ in `private/storage/`, outside the web folder.
       assets/vendor/        SheetJS (Apache 2.0) for Excel exports
     private/                never served to the web
       config.example.php    copy to config.php and set the password
-      storage/              saved pay periods and settings (created and filled by the portal)
+      storage/              uploads, corrections and settings (created and filled by the portal)
     tests/check.js          node tests/check.js <export.csv> prints what the engine makes of a file
+    tests/merge.js          node tests/merge.js <export.csv> checks that overlapping and repeated uploads count once
 
 ## Deploying on Plesk (hr.josephrowelaw.com)
 

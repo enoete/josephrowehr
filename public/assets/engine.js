@@ -90,19 +90,68 @@
     return sunPunch >= 3 && friMorning <= Math.max(1, friEvening / 3);
   }
 
-  // ---- 2. Rebuild real working days ----
-  function build(parsed, settingsIn, corrections) {
+  // ---- 2. Combine every upload into one record ----
+  // Each upload covers a date range. For every person and every report day, one copy is kept: the one from the
+  // upload whose range runs furthest past that day (it was exported later, so it saw the whole day), then the one
+  // with more punches recorded, then the most recently uploaded. Re-uploads and overlaps never double-count.
+  function merge(uploads) {
+    const best = {}, names = {}, order = [], totals = [];
+    const better = (a, b) => (a.end !== b.end ? a.end > b.end : a.punches !== b.punches ? a.punches > b.punches : String(a.at) >= String(b.at));
+    const ranked = uploads.map((u) => ({ u, p: u.parsed || parseCsv(u.csv) }))
+      .sort((a, b) => (a.p.end === b.p.end ? String(a.u.uploadedAt).localeCompare(String(b.u.uploadedAt)) : a.p.end < b.p.end ? -1 : 1));
+    let from = null, to = null;
+    for (const { u, p } of ranked) {
+      totals.push({ start: p.start, end: p.end, byId: Object.fromEntries(p.employees.map((e) => [e.id, e.clockTotalMin])) });
+      if (!from || p.start < from) from = p.start;
+      if (!to || p.end > to) to = p.end;
+      for (const e of p.employees) {
+        if (!(e.id in names)) order.push(e.id);
+        names[e.id] = e.name;
+        const rowsByLabel = {};
+        for (const r of e.rows) (rowsByLabel[r.label] = rowsByLabel[r.label] || []).push(r);
+        for (let d = p.start; d <= p.end; d = addDays(d, 1)) {
+          const rows = rowsByLabel[d] || [];
+          const cand = { rows, upload: u.id, end: p.end, at: u.uploadedAt, punches: rows.reduce((a, r) => a + (r.inMin != null) + (r.outMin != null), 0) };
+          const k = e.id + '|' + d;
+          if (!best[k] || better(cand, best[k])) best[k] = cand;
+        }
+      }
+    }
+    const employees = order.map((id) => {
+      const covered = new Set(), rows = [];
+      for (const [k, v] of Object.entries(best)) {
+        const [eid, d] = k.split('|');
+        if (eid !== id) continue;
+        covered.add(d); rows.push(...v.rows);
+      }
+      rows.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+      return { id, name: names[id], rows, covered };
+    });
+    employees.sort((a, b) => (+a.id || 0) - (+b.id || 0) || a.name.localeCompare(b.name));
+    return { start: from, end: to, employees, source: best, totals };
+  }
+
+  // ---- 3. Rebuild real working days for a date range ----
+  // data: a single parsed export or the result of merge(). range: { from, to } in ISO dates (defaults to all of it).
+  function build(data, settingsIn, corrections, range) {
+    const parsed = data;
     const S = Object.assign({}, DEFAULTS, settingsIn || {});
     corrections = corrections || {};
     const cutoff = S.cutoff ? clockToMin(S.cutoff) : null;
     const shift = cutoff != null && cutoff > 0;
     const startMin = clockToMin(S.workStart), endMin = clockToMin(S.workEnd);
     const holidays = new Set(S.holidays || []);
-    const lastDay = shift ? addDays(parsed.end, 1) : parsed.end;
-    const dates = []; for (let d = parsed.start; d <= lastDay; d = addDays(d, 1)) dates.push(d);
+    const from = (range && range.from) || parsed.start, to = (range && range.to) || (shift ? addDays(parsed.end, 1) : parsed.end);
+    const dates = []; for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
     const realDate = (label, min) => (shift && min < cutoff ? addDays(label, 1) : label);
 
     const people = parsed.employees.map((e) => {
+      // Which report days the clock data covers for this person. A real day is complete only when every report day
+      // that can hold its punches is covered (with a changeover, its morning sits on the report day before).
+      const cov = e.covered || (() => { const c = new Set(); for (let d = parsed.start; d <= parsed.end; d = addDays(d, 1)) c.add(d); return c; })();
+      const full = (d) => (shift ? cov.has(addDays(d, -1)) && cov.has(d) : cov.has(d));
+      const some = (d) => cov.has(d) || (shift && cov.has(addDays(d, -1)));
+      let clockMin = 0, clockAny = false;
       const byDate = {}; const day = (d) => (byDate[d] = byDate[d] || { spans: [], loose: [] });
       const byLabel = {};
       for (const r of e.rows) {
@@ -115,6 +164,7 @@
         else if (r.outMin != null) day(realDate(r.label, r.outMin)).loose.push({ min: r.outMin, type: 'OUT', src: 'clock' });
       }
       // The clock counts seconds, so its daily total can be a minute more than its rows add up to. Keep its figure.
+      for (const [lab, L] of Object.entries(byLabel)) if (L.daily != null && lab >= from && lab <= to) { clockMin += L.daily; clockAny = true; }
       for (const L of Object.values(byLabel)) {
         if (L.daily == null || !L.pairs.length) continue;
         const delta = L.daily - L.pairs.reduce((a, s) => a + s.min, 0);
@@ -152,10 +202,10 @@
         if (S.lunchMin > 0 && spans.length === 1 && spans[0].min >= S.lunchAfterMin) { lunch = Math.min(S.lunchMin, minutes); minutes -= lunch; }
 
         const wd = dow(date), isWorkDay = S.workDays.includes(wd);
-        const partial = shift && (date === parsed.start || date > parsed.end);
         const any = spans.length || loose.length;
+        const partial = !full(date);
         let status;
-        if (partial) status = 'partial';
+        if (partial) status = any || some(date) ? 'partial' : 'nodata';
         else if (!any) status = holidays.has(date) ? 'holiday' : isWorkDay ? 'absent' : 'off';
         else status = unresolved.length ? 'attention' : 'ok';
         const first = Math.min(spans.length ? spans[0].in : Infinity, ...unresolved.filter((p) => p.type === 'IN').map((p) => p.min));
@@ -171,12 +221,20 @@
           firstIn: isFinite(first) ? first : null, lastOut: lastSpanOut, lateMin, earlyMin, note: c.note || '', manual: (c.add || []).slice(),
           kinds: Array.from(new Set(spans.map((s) => s.kind))), weekendWork: counted && !isWorkDay };
       });
-      return { id: e.id, name: e.name, clockTotalMin: e.clockTotalMin, days };
+      // When the range is exactly one export's pay period, show that export's own "Total Hours" figure.
+      const whole = (parsed.totals || []).filter((t) => t.start === from && (t.end === to || addDays(t.end, 1) === to) && e.id in t.byId).pop();
+      const clockTotalMin = whole ? whole.byId[e.id] : clockAny ? clockMin : e.covered ? null : e.clockTotalMin;
+      return { id: e.id, name: e.name, clockTotalMin, days };
     });
 
     // A working day on which nobody clocked at all is treated as the office being closed, not as absences.
+    const shown = people.filter((p) => p.days.some((d) => d.status !== 'nodata'));
+    people.length = 0; people.push(...shown);
     const closed = new Set();
-    dates.forEach((d, i) => { if (people.length > 1 && people.every((p) => p.days[i].status === 'absent')) closed.add(d); });
+    dates.forEach((d, i) => {
+      const withData = people.filter((p) => !['nodata', 'partial', 'off', 'holiday'].includes(p.days[i].status));
+      if (withData.length > 1 && withData.every((p) => p.days[i].status === 'absent')) closed.add(d);
+    });
     for (const p of people) {
       for (const d of p.days) if (closed.has(d.date)) d.status = 'closed';
       const cnt = (f) => p.days.filter(f).length;
@@ -188,8 +246,9 @@
       p.recoveredMin = p.days.reduce((a, d) => a + d.spans.filter((s) => s.kind !== 'clock').reduce((x, s) => x + s.min, 0), 0);
       p.assumedDays = cnt((d) => d.kinds.includes('assumed'));
     }
-    return { start: parsed.start, end: parsed.end, dates, shift, settings: S, closed: Array.from(closed), people };
+    const noData = dates.filter((d, i) => people.every((p) => p.days[i].status === 'nodata'));
+    return { start: from, end: to, dates, shift, settings: S, closed: Array.from(closed), noData, people };
   }
 
-  return { parseCsv, build, detectSplitDays, DEFAULTS, clockToMin, fmtTime, fmtDur, fmtDec, fmtDate, addDays, dow, DAYS };
+  return { parseCsv, merge, build, detectSplitDays, DEFAULTS, clockToMin, fmtTime, fmtDur, fmtDec, fmtDate, addDays, dow, DAYS };
 });

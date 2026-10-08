@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Open+Sans:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="assets/app.css?v=1">
+<link rel="stylesheet" href="assets/app.css?v=2">
 </head>
 <body>
 
@@ -44,8 +44,13 @@
       <button type="button" class="tab" data-tab="settings">Settings</button>
     </nav>
     <div class="top-right">
-      <label class="sr-only" for="periodSel">Pay period</label>
+      <label class="sr-only" for="periodSel">Dates to report on</label>
       <select id="periodSel" class="select"></select>
+      <form id="customRange" class="range-pop" hidden>
+        <label for="rangeFrom">From<input id="rangeFrom" type="date" required></label>
+        <label for="rangeTo">To<input id="rangeTo" type="date" required></label>
+        <button type="submit" class="btn small">Show</button>
+      </form>
       <button type="button" id="logoutBtn" class="quiet-btn">Sign out</button>
     </div>
   </header>
@@ -59,7 +64,7 @@
 
     <section id="tab-uploads" class="pane" hidden>
       <div class="pane-head"><div><h1>Uploads</h1>
-        <p class="lede">Add the Timecard Report file exported from the time clock. Each pay period is kept here so you can come back to it.</p></div></div>
+        <p class="lede">Add the Timecard Report file exported from the time clock. Every file joins one record: dates that overlap and files added twice are counted once, so any export can go in at any time.</p></div></div>
       <label class="drop" id="drop" for="fileInput">
         <input id="fileInput" type="file" accept=".csv,text/csv" class="sr-only">
         <strong>Choose the CSV file, or drop it here</strong>
@@ -127,7 +132,7 @@
 <div id="printArea" class="print-only"></div>
 
 <script src="assets/vendor/xlsx.mini.min.js"></script>
-<script src="assets/engine.js?v=1"></script>
-<script src="assets/app.js?v=1"></script>
+<script src="assets/engine.js?v=2"></script>
+<script src="assets/app.js?v=2"></script>
 </body>
 </html>

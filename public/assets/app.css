@@ -64,7 +64,10 @@ button { cursor: pointer; }
 .tab:hover { color: var(--navy); }
 .tab[aria-current="page"] { color: var(--navy); font-weight: 600; border-top-color: var(--sky); }
 .count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--amber); color: var(--navy); font-size: .7rem; font-weight: 700; letter-spacing: 0; }
-.top-right { display: flex; align-items: center; gap: 6px; }
+.top-right { position: relative; display: flex; align-items: center; gap: 6px; }
+.range-pop { position: absolute; top: calc(100% + 8px); right: 0; z-index: 6; background: var(--surface); border-radius: var(--r-md); box-shadow: 0 12px 34px rgba(16,39,61,.2); padding: 14px; display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; width: max-content; max-width: calc(100vw - 32px); }
+.range-pop label { display: flex; flex-direction: column; gap: 4px; font-size: .78rem; font-weight: 600; color: var(--navy); }
+.range-pop input { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--ground); }
 
 /* ---------- Content ---------- */
 .content { padding: 40px 32px 80px; }

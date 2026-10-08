@@ -4,10 +4,10 @@
   const E = window.Engine;
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const STATUS = { ok: 'Complete', attention: 'Needs attention', absent: 'Absent', off: 'Weekend', closed: 'Office closed', holiday: 'Holiday', partial: 'Outside this export' };
+  const STATUS = { ok: 'Complete', attention: 'Needs attention', absent: 'Absent', off: 'Weekend', closed: 'Office closed', holiday: 'Holiday', partial: 'Partly outside the uploaded files', nodata: 'No clock data yet' };
   const KIND = { recovered: 'Rebuilt', assumed: 'Assumed', manual: 'Corrected' };
 
-  const state = { periods: [], saved: null, period: null, parsed: null, built: null, tab: 'overview', person: null };
+  const state = { uploads: [], corrections: {}, saved: null, merged: null, range: null, built: null, tab: 'overview', person: null };
 
   async function api(action, body, query) {
     const url = 'api.php?do=' + action + (query ? '&' + query : '');
@@ -27,45 +27,68 @@
     if (!me.json.signedIn) return showLogin(me.json.ready ? '' : 'Sign-in has not been set up yet. Ask your administrator to finish the configuration.');
     $('#login').hidden = true; $('#app').hidden = false;
     if (!me.json.storage) flash('The server cannot save files yet. Ask your administrator to check the storage folder.', true);
-    await loadPeriods();
+    await loadData();
   }
   $('#loginForm').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const b = $('#loginBtn'); b.disabled = true;
     const r = await api('login', { password: $('#password').value }); b.disabled = false;
     if (r.ok) { $('#password').value = ''; start(); } else showLogin(r.json.error || 'Sign-in failed. Try again.');
   });
-  $('#logoutBtn').addEventListener('click', async () => { await api('logout', {}); state.period = state.built = null; showLogin(''); });
+  $('#logoutBtn').addEventListener('click', async () => { await api('logout', {}); state.merged = state.built = null; showLogin(''); });
 
-  // ---------- data ----------
-  const periodLabel = (p) => `${E.fmtDate(p.start).slice(4)} to ${E.fmtDate(p.end, true).slice(4)}`;
-  function settingsFor(parsed) {
-    if (state.saved && !Array.isArray(state.saved) && state.saved.workStart) return Object.assign({}, E.DEFAULTS, state.saved);
-    return Object.assign({}, E.DEFAULTS, { cutoff: E.detectSplitDays(parsed) ? '16:30' : '' });
+  // ---------- data: every upload is combined into one record; reports cover any date range ----------
+  const rangeLabel = (r) => `${E.fmtDate(r.from).slice(4)} to ${E.fmtDate(r.to, true).slice(4)}`;
+  function settingsFor(data) {
+    if (state.saved && state.saved.workStart) return Object.assign({}, E.DEFAULTS, state.saved);
+    return Object.assign({}, E.DEFAULTS, { cutoff: data && data.employees.length && E.detectSplitDays(data) ? '16:30' : '' });
   }
-  async function loadPeriods(selectId) {
-    const r = await api('periods'); if (!r.ok) return;
-    state.periods = r.json.periods || []; state.saved = r.json.settings;
-    const sel = $('#periodSel');
-    sel.innerHTML = state.periods.map((p) => `<option value="${p.id}">${esc(periodLabel(p))}</option>`).join('') || '<option value="">No pay period yet</option>';
-    sel.disabled = !state.periods.length;
-    renderPeriodList(); fillSettings();
-    const id = selectId || (state.period && state.periods.some((p) => p.id === state.period.id) ? state.period.id : state.periods[0] && state.periods[0].id);
-    if (id) { sel.value = id; await loadPeriod(id); } else { state.period = state.built = null; renderAll(); go('uploads'); }
+  function payPeriods() {          // the date ranges of the uploaded files, newest first, without repeats
+    const seen = new Set(), out = [];
+    for (const u of state.uploads.slice().sort((a, b) => (a.end === b.end ? (a.start < b.start ? 1 : -1) : a.end < b.end ? 1 : -1))) {
+      const k = u.start + '|' + u.end; if (!seen.has(k)) { seen.add(k); out.push({ from: u.start, to: u.end }); }
+    }
+    return out;
   }
-  async function loadPeriod(id) {
-    const r = await api('period', undefined, 'id=' + encodeURIComponent(id));
-    if (!r.ok || r.json.error) return flash('That pay period could not be opened.', true);
-    state.period = r.json;
-    try { state.parsed = E.parseCsv(r.json.csv); } catch (e) { return flash(e.message, true); }
-    rebuild();
+  async function loadData(focus) {
+    const r = await api('data'); if (!r.ok) return;
+    state.saved = r.json.settings; state.corrections = r.json.corrections || {};
+    state.uploads = (r.json.uploads || []).map((u) => { try { return Object.assign(u, { parsed: E.parseCsv(u.csv) }); } catch (e) { return null; } }).filter(Boolean);
+    state.merged = state.uploads.length ? E.merge(state.uploads) : null;
+    const periods = payPeriods();
+    if (focus) state.range = focus;
+    else if (!state.range || !state.merged) state.range = periods[0] || null;
+    drawRangePicker(); renderUploads(); fillSettings();
+    if (state.merged) rebuild(); else { state.built = null; renderAll(); go('uploads'); }
   }
+  function drawRangePicker() {
+    const sel = $('#periodSel'), periods = payPeriods(), r = state.range;
+    const opts = periods.map((p) => [`${p.from}|${p.to}`, rangeLabel(p)]);
+    if (state.merged) opts.push([`${state.merged.start}|${state.merged.end}`, 'All dates on record']);
+    const cur = r ? `${r.from}|${r.to}` : '';
+    if (r && !opts.some((o) => o[0] === cur)) opts.unshift([cur, rangeLabel(r)]);
+    opts.push(['custom', 'Choose dates…']);
+    sel.innerHTML = opts.map((o) => `<option value="${o[0]}">${esc(o[1])}</option>`).join('');
+    sel.value = cur || 'custom'; sel.disabled = !state.merged;
+    $('#rangeFrom').value = r ? r.from : ''; $('#rangeTo').value = r ? r.to : '';
+    $('#customRange').hidden = true;
+  }
+  $('#periodSel').addEventListener('change', (e) => {
+    if (e.target.value === 'custom') { $('#customRange').hidden = false; $('#rangeFrom').focus(); return; }
+    const [from, to] = e.target.value.split('|'); state.range = { from, to }; $('#customRange').hidden = true; rebuild();
+  });
+  $('#customRange').addEventListener('submit', (e) => {
+    e.preventDefault(); const from = $('#rangeFrom').value, to = $('#rangeTo').value;
+    if (!from || !to || from > to) { flash('Choose a start date on or before the end date.', true); return; }
+    state.range = { from, to }; drawRangePicker(); rebuild();
+  });
   function rebuild() {
-    const c = state.period.corrections; state.settings = settingsFor(state.parsed);
-    state.built = E.build(state.parsed, state.settings, Array.isArray(c) ? {} : c || {});
+    if (!state.merged || !state.range) return;
+    state.settings = settingsFor(state.merged);
+    state.built = E.build(state.merged, state.settings, state.corrections, state.range);
+    if (!state.built.people.length) { renderAll(); return; }
     if (!state.person || !state.built.people.some((p) => p.id === state.person)) state.person = state.built.people[0].id;
     renderAll();
   }
-  $('#periodSel').addEventListener('change', (e) => { if (e.target.value) loadPeriod(e.target.value); });
 
   // ---------- navigation ----------
   function go(tab) {
@@ -78,7 +101,7 @@
 
   // ---------- reports: each is { title, sub, file, cols, rows } so the screen and every export share one source ----------
   const B = () => state.built;
-  const span = () => periodLabel(B());
+  const span = () => rangeLabel({ from: B().start, to: B().end });
   function rSummary() {
     return { title: 'Hours summary', sub: span(), file: 'hours-summary',
       cols: [['Employee', 'l'], ['ID', 'l'], ['Days worked'], ['Hours'], ['Hours (decimal)'], ['Clock reported'], ['Rebuilt by portal'], ['Needs attention'], ['Late'], ['Left early'], ['Absent']],
@@ -89,7 +112,7 @@
   function rDaily(people) {
     const rows = [];
     for (const p of people || B().people) for (const d of p.days) {
-      if (d.status === 'off' && !d.punches.length) continue;
+      if ((d.status === 'off' && !d.punches.length) || d.status === 'nodata') continue;
       rows.push([p.name, d.date, E.DAYS[d.dow], d.firstIn == null ? '' : E.fmtTime(d.firstIn), d.lastOut == null ? '' : E.fmtTime(d.lastOut), punchText(d),
         d.minutes ? E.fmtDur(d.minutes) : '', d.minutes ? +E.fmtDec(d.minutes) : '', d.lunch ? d.lunch : '', STATUS[d.status], dayHow(d), d.note]);
     }
@@ -161,8 +184,9 @@
   const chip = (text, cls) => `<span class="chip ${cls || ''}">${esc(text)}</span>`;
   const statusChip = (d) => chip(STATUS[d.status], d.status);
   function renderAll() {
-    const has = !!B();
-    for (const t of ['overview', 'timecards', 'attention', 'punctuality']) if (!has) $('#tab-' + t).innerHTML = `<div class="pane-head"><div><h1>No pay period yet</h1><p class="lede">Upload the time clock's export to see reports here.</p></div></div><button type="button" class="btn" data-go="uploads">Go to uploads</button>`;
+    const has = !!(B() && B().people.length);
+    const msg = state.merged ? ['No clock data for these dates', 'Nothing has been uploaded for this date range yet. Choose other dates, or upload the export that covers them.'] : ['Nothing uploaded yet', "Upload the time clock's export to see reports here."];
+    for (const t of ['overview', 'timecards', 'attention', 'punctuality']) if (!has) $('#tab-' + t).innerHTML = `<div class="pane-head"><div><h1>${msg[0]}</h1><p class="lede">${msg[1]}</p></div></div><button type="button" class="btn" data-go="uploads">Go to uploads</button>`;
     const badge = $('#attnCount'); const total = has ? B().people.reduce((a, p) => a + p.attention, 0) : 0;
     badge.hidden = !total; badge.textContent = total;
     if (!has) return;
@@ -174,13 +198,14 @@
     const b = B(), sum = (f) => b.people.reduce((a, p) => a + f(p), 0);
     const total = sum((p) => p.totalMin), clock = sum((p) => p.clockTotalMin || 0), rep = rSummary();
     const split = b.shift ? `<div class="notice"><strong>The clock's own totals are not reliable for this export.</strong>
-      <p>The clock is set to start a new day at ${E.fmtTime(E.clockToMin(b.settings.cutoff))} instead of midnight, so it filed each morning clock-in under the day before and could not match it to that evening's clock-out. It reported ${E.fmtDur(clock)} hours in total. Put back together day by day, the same punches come to ${E.fmtDur(total)} hours.</p>
+      <p>The clock is set to start a new day at ${E.fmtTime(E.clockToMin(b.settings.cutoff))} instead of midnight, so it filed each morning clock-in under the day before and could not match it to that evening's clock-out. Its own figures come to ${E.fmtDur(clock)} hours for these dates. Put back together day by day, the same punches come to ${E.fmtDur(total)} hours.</p>
       <p>Every figure the portal rebuilt is marked, and both totals appear in the table below so you can compare. <button type="button" class="link" data-go="settings">Review how the file is read</button></p></div>` : '';
     const closed = b.closed.length ? `<p class="muted small">Treated as office closed (nobody clocked in): ${b.closed.map((d) => E.fmtDate(d)).join(', ')}.</p>` : '';
-    $('#tab-overview').innerHTML = `<div class="pane-head"><div><h1>Pay period ${esc(span())}</h1>
-        <p class="lede">${b.people.length} employees. Uploaded file: ${esc(state.period.filename)}.</p></div>
+    const gaps = b.noData.length ? `<p class="caution">No clock data has been uploaded yet for ${b.noData.length === 1 ? E.fmtDate(b.noData[0]) : `${E.fmtDate(b.noData[0])} to ${E.fmtDate(b.noData[b.noData.length - 1])}`}. Those days are left out, not counted as absences.</p>` : '';
+    $('#tab-overview').innerHTML = `<div class="pane-head"><div><h1>${esc(span())}</h1>
+        <p class="lede">${b.people.length} employees. Built from ${state.uploads.length} uploaded ${state.uploads.length === 1 ? 'file' : 'files'}, combined so each day is counted once.</p></div>
         ${exportBar('summary', '<button type="button" class="btn small" data-x="xlsx" data-r="all">Download all reports (Excel)</button>')}</div>
-      ${split}
+      ${split}${gaps}
       <div class="stats">
         <div class="stat"><span>Hours worked</span><strong>${E.fmtDur(total)}</strong><em>${b.shift ? `clock reported ${E.fmtDur(clock)}` : `${E.fmtDec(total)} decimal`}</em></div>
         <button type="button" class="stat link-stat" data-go="attention"><span>Days needing attention</span><strong>${sum((p) => p.attention)}</strong><em>a punch is missing</em></button>
@@ -192,12 +217,12 @@
 
   function renderTimecards() {
     const b = B(), p = b.people.find((x) => x.id === state.person);
-    const rows = p.days.filter((d) => !(d.status === 'off' && !d.punches.length)).map((d) => {
+    const rows = p.days.filter((d) => !(d.status === 'off' && !d.punches.length) && d.status !== 'nodata').map((d) => {
       const pun = d.punches.map((x) => `<span class="punch ${x.kind && x.kind !== 'clock' ? x.kind : ''}"><i>${x.type === 'IN' ? 'In' : 'Out'}</i> ${E.fmtTime(x.min)}</span>`).join('');
       return `<tr class="st-${d.status}"><td class="l nowrap">${E.fmtDate(d.date)}</td><td class="l">${pun || '<span class="muted">No punches</span>'}${d.unresolved.length ? `<span class="fn warn">${esc(missing(d))}</span>` : ''}${d.note ? `<span class="fn">Note: ${esc(d.note)}</span>` : ''}</td>
         <td>${d.minutes ? `<strong>${E.fmtDur(d.minutes)}</strong>` : ''}${d.lunch ? `<span class="fn">${d.lunch} min lunch taken off</span>` : ''}</td>
         <td class="l">${statusChip(d)}${d.kinds.filter((k) => KIND[k]).map((k) => chip(KIND[k], 'how')).join('')}</td>
-        <td class="no-print act">${d.status === 'partial' ? '' : `<button type="button" class="ghost-btn" data-edit="${p.id}|${d.date}">${d.status === 'attention' ? 'Fix' : 'Edit'}</button>`}</td></tr>`;
+        <td class="no-print act">${d.status === 'partial' && !d.punches.length ? '' : `<button type="button" class="ghost-btn" data-edit="${p.id}|${d.date}">${d.status === 'attention' ? 'Fix' : 'Edit'}</button>`}</td></tr>`;
     }).join('');
     $('#tab-timecards').innerHTML = `<div class="pane-head"><div><h1>Timecards</h1><p class="lede">One person's pay period, day by day. Use Fix to add a punch the clock missed.</p></div>
         ${exportBar('person', '<button type="button" class="btn small" data-x="print" data-r="cards">Print all timecards</button>')}</div>
@@ -205,7 +230,7 @@
       <div class="card"><div class="sched-head"><div><h2>${esc(p.name)}</h2><p class="who">Employee ID ${esc(p.id)}. ${p.daysWorked} days worked${p.absent ? `, ${p.absent} absent` : ''}${p.late ? `, ${p.late} late` : ''}.</p></div>
         <div class="figure"><span>Total hours</span><strong>${E.fmtDur(p.totalMin)}</strong>${p.clockTotalMin != null && p.clockTotalMin !== p.totalMin ? `<span>clock reported ${E.fmtDur(p.clockTotalMin)}</span>` : p.clockTotalMin == null ? '<span>clock reported none</span>' : ''}</div></div>
         <div class="scroll"><table><thead><tr><th class="l">Date</th><th class="l">Punches</th><th>Hours</th><th class="l">Status</th><th class="no-print"></th></tr></thead><tbody>${rows}</tbody></table></div>
-        <div class="notes">${b.shift ? '<span>Rebuilt: the clock recorded both punches but did not pair them. Assumed: two punches with the same label were read as arrival and departure. Corrected: a punch was added by hand.</span>' : ''}<span>Punches on the first and last days fall partly outside this export and are not counted.</span></div></div>`;
+        <div class="notes">${b.shift ? '<span>Rebuilt: the clock recorded both punches but did not pair them. Assumed: two punches with the same label were read as arrival and departure. Corrected: a punch was added by hand.</span>' : ''}<span>A day marked "Partly outside the uploaded files" is missing punches that sit in an export not uploaded yet. It is counted once that file is added.</span></div></div>`;
   }
   $('#tab-timecards').addEventListener('click', (e) => { const b = e.target.closest('[data-person-pick]'); if (b) { state.person = b.dataset.personPick; renderTimecards(); } });
 
@@ -239,24 +264,42 @@
   $('#dayForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if ($('#addTime').value) editing.add.push({ t: $('#addTime').value, type: $('#addType').value });
-    const r = await api('correct', { id: state.period.id, key: editing.key, add: editing.add, note: $('#dayNote').value });
+    const r = await api('correct', { key: editing.key, add: editing.add, note: $('#dayNote').value });
     if (!r.ok) { $('#dayError').textContent = r.json.error || 'The correction could not be saved. Try again.'; $('#dayError').hidden = false; return; }
-    state.period.corrections = r.json.corrections; dlg.close(); rebuild(); flash('Correction saved.');
+    state.corrections = r.json.corrections; dlg.close(); rebuild(); flash('Correction saved.');
   });
 
   // ---------- uploads ----------
+  // Before saving, compare the record with and without the new file so she sees exactly what it changes.
+  function preview(parsed) {
+    const now = state.uploads.length ? E.merge(state.uploads) : { source: {} };
+    const after = E.merge(state.uploads.concat([{ id: 'new', parsed, uploadedAt: '9999' }]));
+    let added = 0, updated = 0, same = 0;
+    for (const [k, v] of Object.entries(after.source)) {
+      if (v.upload !== 'new') continue;
+      const old = now.source[k];
+      if (!old) added++; else if (JSON.stringify(old.rows) !== JSON.stringify(v.rows)) updated++; else same++;
+    }
+    for (const [k, v] of Object.entries(now.source)) if (after.source[k] && after.source[k].upload !== 'new' && parsed.employees.some((e) => k.startsWith(e.id + '|'))) { const d = k.split('|')[1]; if (d >= parsed.start && d <= parsed.end) same++; }
+    const known = new Set((state.merged ? state.merged.employees : []).map((e) => e.id));
+    const newPeople = parsed.employees.filter((e) => !known.has(e.id)).map((e) => e.name);
+    return { added, updated, same, newPeople };
+  }
   let pending = null;
   function readFile(file) {
     if (!file) return; const fr = new FileReader();
     fr.onload = () => {
-      try { const parsed = E.parseCsv(fr.result); pending = { csv: fr.result, filename: file.name, parsed }; }
-      catch (err) { pending = null; $('#preview').innerHTML = `<p class="form-error">${esc(err.message)}</p>`; return; }
-      const p = pending.parsed, exists = state.periods.some((x) => x.start === p.start && x.end === p.end);
+      let parsed;
+      try { parsed = E.parseCsv(fr.result); } catch (err) { pending = null; $('#preview').innerHTML = `<p class="form-error">${esc(err.message)} Export the Timecard Report from the clock again and choose that file.</p>`; return; }
+      pending = { csv: fr.result, filename: file.name, parsed };
+      const d = preview(parsed), nothing = !d.added && !d.updated;
+      const what = nothing ? 'Everything in this file is already in the portal, so adding it changes nothing.'
+        : 'This file ' + [d.added && `adds ${d.added} new ${d.added === 1 ? 'day' : 'days'} of punches`, d.updated && `fills in ${d.updated} ${d.updated === 1 ? 'day' : 'days'} that an earlier file had only partly`].filter(Boolean).join(' and ') + '.';
       $('#preview').innerHTML = `<div class="card pad"><h2>${esc(file.name)}</h2>
-        <p>Pay period ${esc(periodLabel(p))}, ${p.employees.length} employees: ${esc(p.employees.map((x) => x.name).join(', '))}.</p>
-        ${E.detectSplitDays(p) ? '<p class="muted">This export has working days split across two report days. The portal will put them back together.</p>' : ''}
-        ${exists ? '<p class="caution">A report for this pay period is already saved. Saving again replaces the file and keeps the corrections you have made.</p>' : ''}
-        <div class="row"><button type="button" class="btn" id="saveUpload">${exists ? 'Replace the saved report' : 'Save this pay period'}</button><button type="button" class="quiet-btn" id="cancelUpload">Cancel</button></div></div>`;
+        <p>Covers ${esc(rangeLabel({ from: parsed.start, to: parsed.end }))} for ${parsed.employees.length} employees.${d.newPeople.length ? ` New to the portal: ${esc(d.newPeople.join(', '))}.` : ''}</p>
+        <p><strong>${what}</strong>${d.same && !nothing ? ` The ${d.same} days it shares with earlier files are already here and are counted once.` : ''}</p>
+        ${nothing ? '' : '<p class="muted small">Day counts are per employee. Your corrections and notes are kept.</p>'}
+        <div class="row">${nothing ? '<button type="button" class="btn" id="cancelUpload">Done</button>' : '<button type="button" class="btn" id="saveUpload">Add to the record</button><button type="button" class="quiet-btn" id="cancelUpload">Cancel</button>'}</div></div>`;
     };
     fr.onerror = () => { $('#preview').innerHTML = '<p class="form-error">The file could not be read. Choose it again.</p>'; };
     fr.readAsText(file);
@@ -270,25 +313,29 @@
     if (e.target.id === 'cancelUpload') { pending = null; $('#preview').innerHTML = ''; return; }
     if (e.target.id !== 'saveUpload' || !pending) return;
     e.target.disabled = true; const p = pending.parsed;
-    const r = await api('upload', { csv: pending.csv, filename: pending.filename, start: p.start, end: p.end, employees: p.employees.length, replace: true, keepCorrections: true });
+    const r = await api('upload', { csv: pending.csv, filename: pending.filename, start: p.start, end: p.end, employees: p.employees.length });
     if (!r.ok) { e.target.disabled = false; return flash(r.json.error || 'The file could not be saved. Try again.', true); }
-    pending = null; $('#preview').innerHTML = ''; await loadPeriods(r.json.id); go('overview'); flash('Pay period saved.');
+    pending = null; $('#preview').innerHTML = '';
+    await loadData({ from: p.start, to: p.end }); go('overview');
+    flash(r.json.duplicate ? 'That exact file was already uploaded, so nothing changed.' : 'Added. Reports now include this file.');
   });
-  function renderPeriodList() {
-    $('#periodList').innerHTML = `<div class="card-head"><h2>Saved pay periods</h2></div>` + (state.periods.length ? `<div class="scroll"><table><thead><tr><th class="l">Pay period</th><th class="l">File</th><th>Employees</th><th class="l">Uploaded</th><th></th></tr></thead><tbody>${state.periods.map((p) => `<tr><td class="l"><button type="button" class="row-btn" data-open="${p.id}">${esc(periodLabel(p))}</button></td><td class="l">${esc(p.filename)}</td><td>${p.employees || ''}</td><td class="l">${esc(new Date(p.uploadedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }))}</td>
-      <td class="act"><span class="confirm" hidden>Delete this pay period and its corrections? <button type="button" class="ghost-btn danger" data-del="${p.id}">Delete</button> <button type="button" class="quiet-btn" data-keep>Keep</button></span><button type="button" class="quiet-btn" data-ask>Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Nothing uploaded yet.</p>');
+  function renderUploads() {
+    const list = state.uploads.slice().sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1));
+    const cover = state.merged ? `<p class="muted small">Clock data on record: ${esc(rangeLabel({ from: state.merged.start, to: state.merged.end }))}.</p>` : '';
+    $('#periodList').innerHTML = `<div class="card-head"><h2>Uploaded files</h2>${cover}</div>` + (list.length ? `<div class="scroll"><table><thead><tr><th class="l">File</th><th class="l">Covers</th><th>Employees</th><th class="l">Uploaded</th><th></th></tr></thead><tbody>${list.map((u) => `<tr><td class="l">${esc(u.filename)}</td><td class="l"><button type="button" class="row-btn" data-open="${u.start}|${u.end}">${esc(rangeLabel({ from: u.start, to: u.end }))}</button></td><td>${u.employees || ''}</td><td class="l">${esc(new Date(u.uploadedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }))}</td>
+      <td class="act"><span class="confirm" hidden>Remove this file? Days that only it contains leave the reports; your corrections are kept. <button type="button" class="ghost-btn danger" data-del="${u.id}">Remove</button> <button type="button" class="quiet-btn" data-keep>Keep</button></span><button type="button" class="quiet-btn" data-ask>Remove</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Nothing uploaded yet.</p>');
   }
   $('#periodList').addEventListener('click', async (e) => {
     const t = e.target, cell = t.closest('td');
-    if (t.dataset.open) { $('#periodSel').value = t.dataset.open; await loadPeriod(t.dataset.open); go('overview'); }
+    if (t.dataset.open) { const [from, to] = t.dataset.open.split('|'); state.range = { from, to }; drawRangePicker(); rebuild(); go('overview'); }
     else if ('ask' in t.dataset) { cell.querySelector('.confirm').hidden = false; t.hidden = true; }
     else if ('keep' in t.dataset) { cell.querySelector('.confirm').hidden = true; cell.querySelector('[data-ask]').hidden = false; }
-    else if (t.dataset.del) { const r = await api('delete', { id: t.dataset.del }); if (r.ok) { await loadPeriods(); flash('Pay period deleted.'); } }
+    else if (t.dataset.del) { const r = await api('delete', { id: t.dataset.del }); if (r.ok) { state.range = null; await loadData(); flash('File removed.'); } }
   });
 
   // ---------- settings ----------
   function fillSettings() {
-    const s = state.saved && !Array.isArray(state.saved) && state.saved.workStart ? Object.assign({}, E.DEFAULTS, state.saved) : (state.parsed ? settingsFor(state.parsed) : E.DEFAULTS);
+    const s = settingsFor(state.merged);
     $('#setStart').value = s.workStart; $('#setEnd').value = s.workEnd; $('#setGrace').value = s.graceMin; $('#setLunch').value = s.lunchMin;
     $('#setCutoff').value = s.cutoff || ''; $('#setAssume').checked = !!s.assumeSameLabel; $('#setHolidays').value = (s.holidays || []).join('\n');
   }
@@ -298,7 +345,7 @@
     if (bad.length) { $('#settingsMsg').textContent = `Write closed dates as year-month-day, for example 2026-12-25. Check: ${bad.join(', ')}`; return; }
     const r = await api('settings', { workStart: $('#setStart').value, workEnd: $('#setEnd').value, graceMin: +$('#setGrace').value, lunchMin: +$('#setLunch').value, cutoff: $('#setCutoff').value, assumeSameLabel: $('#setAssume').checked, holidays: days });
     if (!r.ok) { $('#settingsMsg').textContent = r.json.error || 'The settings could not be saved.'; return; }
-    state.saved = r.json.settings; $('#settingsMsg').textContent = 'Saved. Reports now use these settings.'; if (state.period) rebuild();
+    state.saved = r.json.settings; $('#settingsMsg').textContent = 'Saved. Reports now use these settings.'; rebuild();
   });
 
   start();

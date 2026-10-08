@@ -51,21 +51,22 @@ if (!hr_storage_ready()) {
 }
 $settingsFile = HR_STORAGE . '/settings.json';
 
+hr_migrate();
+@mkdir(HR_STORAGE . '/uploads', 0750, true);
+$corrFile = HR_STORAGE . '/corrections.json';
+
 switch ($do) {
-    case 'periods':   // list of uploaded pay periods, newest first, plus saved settings
-        $list = [];
-        foreach (glob(HR_STORAGE . '/period-*.json') ?: [] as $f) {
-            $p = hr_read($f);
-            if ($p) {
-                $list[] = ['id' => $p['id'], 'start' => $p['start'], 'end' => $p['end'], 'filename' => $p['filename'],
-                    'uploadedAt' => $p['uploadedAt'], 'employees' => $p['employees'] ?? null];
+    case 'data':      // every upload, all corrections and the settings; the browser combines them
+        $uploads = [];
+        foreach (glob(HR_STORAGE . '/uploads/u*.json') ?: [] as $f) {
+            $u = hr_read($f);
+            if ($u) {
+                unset($u['hash']);
+                $uploads[] = $u;
             }
         }
-        usort($list, fn ($a, $b) => strcmp($b['start'], $a['start']));
-        hr_json(['periods' => $list, 'settings' => hr_read($settingsFile)]);
-
-    case 'period':    // one pay period: the export as uploaded and any corrections
-        hr_json(hr_read(hr_period_file((string) ($_GET['id'] ?? '')), ['error' => 'Unknown pay period.']));
+        usort($uploads, fn ($a, $b) => strcmp($a['uploadedAt'], $b['uploadedAt']));
+        hr_json(['uploads' => $uploads, 'corrections' => (object) hr_read($corrFile), 'settings' => (object) hr_read($settingsFile)]);
 
     case 'upload':
         $b = hr_body();
@@ -74,38 +75,41 @@ switch ($do) {
         $end = (string) ($b['end'] ?? '');
         if ($csv === '' || strlen($csv) > 3000000 || !str_contains($csv, 'Timecard Report')
             || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $start) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $end)) {
-            hr_json(['error' => 'That file is not a Timecard Report export, or it is too large.'], 400);
+            hr_json(['error' => 'That file is not a Timecard Report export from the time clock, or it is too large.'], 400);
         }
-        $id = str_replace('-', '', $start) . '-' . str_replace('-', '', $end);
-        $file = hr_period_file($id);
-        $existing = hr_read($file);
-        if ($existing && empty($b['replace'])) {
-            hr_json(['error' => 'exists', 'id' => $id], 409);
-        }
-        hr_write($file, [
-            'id' => $id, 'start' => $start, 'end' => $end,
-            'filename' => mb_substr(basename((string) ($b['filename'] ?? 'timecard.csv')), 0, 120),
-            'uploadedAt' => gmdate('c'), 'employees' => (int) ($b['employees'] ?? 0), 'csv' => $csv,
-            // Corrections are kept when the same period is uploaded again unless the caller asks to drop them.
-            'corrections' => !empty($b['keepCorrections']) && $existing ? ($existing['corrections'] ?? []) : [],
-        ]);
-        hr_json(['id' => $id]);
+        $hash = sha1(str_replace("\r\n", "\n", trim($csv)));
+        $result = hr_locked(function () use ($hash, $csv, $start, $end, $b) {
+            foreach (glob(HR_STORAGE . '/uploads/u*.json') ?: [] as $f) {
+                $u = hr_read($f);
+                if (($u['hash'] ?? '') === $hash) {
+                    return ['id' => $u['id'], 'duplicate' => true];
+                }
+            }
+            $id = 'u' . gmdate('YmdHis') . bin2hex(random_bytes(3));
+            hr_write(HR_STORAGE . '/uploads/' . $id . '.json', [
+                'id' => $id, 'filename' => mb_substr(basename((string) ($b['filename'] ?? 'timecard.csv')), 0, 120),
+                'uploadedAt' => gmdate('c'), 'start' => $start, 'end' => $end, 'employees' => (int) ($b['employees'] ?? 0),
+                'hash' => $hash, 'csv' => $csv,
+            ]);
+            return ['id' => $id, 'duplicate' => false];
+        });
+        hr_json($result);
 
     case 'delete':
         $b = hr_body();
-        $file = hr_period_file((string) ($b['id'] ?? ''));
-        if (is_file($file)) {
-            unlink($file);
-        }
+        $file = hr_upload_file((string) ($b['id'] ?? ''));
+        hr_locked(function () use ($file) {
+            if (is_file($file)) {
+                unlink($file);
+            }
+        });
         hr_json(['deleted' => true]);
 
-    case 'correct':   // save the manual punches and note for one person on one day
+    case 'correct':   // the punches added by hand and the note for one person on one day
         $b = hr_body();
-        $file = hr_period_file((string) ($b['id'] ?? ''));
-        $p = hr_read($file);
         $key = (string) ($b['key'] ?? '');
-        if (!$p || !preg_match('/^\w{1,20}\|\d{4}-\d{2}-\d{2}$/', $key)) {
-            hr_json(['error' => 'Unknown pay period or day.'], 404);
+        if (!preg_match('/^\w{1,20}\|\d{4}-\d{2}-\d{2}$/', $key)) {
+            hr_json(['error' => 'Unknown day.'], 404);
         }
         $add = [];
         foreach (array_slice((array) ($b['add'] ?? []), 0, 12) as $a) {
@@ -114,14 +118,16 @@ switch ($do) {
             }
         }
         $note = trim(mb_substr((string) ($b['note'] ?? ''), 0, 300));
-        $all = (array) ($p['corrections'] ?? []);
-        if ($add || $note !== '') {
-            $all[$key] = ['add' => $add, 'note' => $note, 'at' => gmdate('c')];
-        } else {
-            unset($all[$key]);
-        }
-        $p['corrections'] = $all;
-        hr_write($file, $p);
+        $all = hr_locked(function () use ($corrFile, $key, $add, $note) {
+            $all = hr_read($corrFile);
+            if ($add || $note !== '') {
+                $all[$key] = ['add' => $add, 'note' => $note, 'at' => gmdate('c')];
+            } else {
+                unset($all[$key]);
+            }
+            hr_write($corrFile, $all);
+            return $all;
+        });
         hr_json(['corrections' => (object) $all]);
 
     case 'settings':
