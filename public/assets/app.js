@@ -21,13 +21,18 @@
 
   // ---------- sign-in ----------
   function showLogin(msg) { $('#app').hidden = true; $('#login').hidden = false; const e = $('#loginError'); e.hidden = !msg; e.textContent = msg || ''; $('#password').focus(); }
+  // Ask for the data straight away; only if that is refused do we need the sign-in details. One wait instead of two.
   async function start() {
-    const me = await api('me');
-    if (!me.ok) return showLogin('The server is not responding. Refresh the page, or contact your administrator.');
-    if (!me.json.signedIn) return showLogin(me.json.ready ? '' : 'Sign-in has not been set up yet. Ask your administrator to finish the configuration.');
+    const r = await api('data');
+    if (!r.ok) {
+      const me = await api('me');
+      if (!me.ok) return showLogin('The server is not responding. Refresh the page, or contact your administrator.');
+      if (!me.json.signedIn) return showLogin(me.json.ready ? '' : 'Sign-in has not been set up yet. Ask your administrator to finish the configuration.');
+      $('#login').hidden = true; $('#app').hidden = false;
+      return flash(r.json.error || 'The records could not be loaded. Refresh the page to try again.', true);
+    }
     $('#login').hidden = true; $('#app').hidden = false;
-    if (!me.json.storage) flash('The server cannot save files yet. Ask your administrator to check the storage folder.', true);
-    await loadData();
+    await loadData(undefined, r);
   }
   $('#loginForm').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const b = $('#loginBtn'); b.disabled = true;
@@ -49,8 +54,8 @@
     }
     return out;
   }
-  async function loadData(focus) {
-    const r = await api('data'); if (!r.ok) return;
+  async function loadData(focus, loaded) {
+    const r = loaded || await api('data'); if (!r.ok) return;
     state.saved = r.json.settings; state.corrections = r.json.corrections || {};
     state.uploads = (r.json.uploads || []).map((u) => { try { return Object.assign(u, { parsed: E.parseCsv(u.csv) }); } catch (e) { return null; } }).filter(Boolean);
     state.merged = state.uploads.length ? E.merge(state.uploads) : null;

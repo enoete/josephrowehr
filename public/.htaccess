@@ -1,1 +1,15 @@
 Options -Indexes
+
+# Speed: the scripts, styles and images carry a version (?v=) in the page, so browsers can keep them for a year
+# and do not have to ask the server again on every visit. The page itself is always checked for updates.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|png|jpg|jpeg|svg|woff2?)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript text/javascript application/json
+</IfModule>

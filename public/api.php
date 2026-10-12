@@ -5,6 +5,29 @@ require __DIR__ . '/../private/bootstrap.php';
 $do = $_GET['do'] ?? '';
 $cfg = hr_config();
 
+// The firm's public logo, fetched once from josephrowelaw.com and kept on this server so pages never wait on the
+// main website. Browsers keep it for a year (change ?v= in the page to refresh it).
+if ($do === 'logo') {
+    $cache = HR_STORAGE . '/logo.png';
+    if (!is_file($cache) || filesize($cache) < 500) {
+        @mkdir(HR_STORAGE, 0750, true);
+        $ch = curl_init('https://www.josephrowelaw.com/wp-content/uploads/2024/12/header-logo-1.png');
+        curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_TIMEOUT => 10]);
+        $png = curl_exec($ch);
+        $ok = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) === 200 && is_string($png) && str_starts_with($png, "\x89PNG");
+        curl_close($ch);
+        if (!$ok) {
+            http_response_code(404);
+            exit;
+        }
+        file_put_contents($cache, $png, LOCK_EX);
+    }
+    header('Content-Type: image/png');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    readfile($cache);
+    exit;
+}
+
 if ($do === 'me') {
     hr_json(['signedIn' => hr_signed_in(), 'ready' => $cfg['hr_password'] !== '', 'storage' => hr_storage_ready()]);
 }
@@ -66,7 +89,7 @@ switch ($do) {
             }
         }
         usort($uploads, fn ($a, $b) => strcmp($a['uploadedAt'], $b['uploadedAt']));
-        hr_json(['uploads' => $uploads, 'corrections' => (object) hr_read($corrFile), 'settings' => (object) hr_read($settingsFile)]);
+        hr_json(['storage' => true, 'uploads' => $uploads, 'corrections' => (object) hr_read($corrFile), 'settings' => (object) hr_read($settingsFile)]);
 
     case 'upload':
         $b = hr_body();
